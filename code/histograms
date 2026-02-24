@@ -1,0 +1,218 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+# =====================================================
+# 1. LOAD DATA
+# =====================================================
+
+panel_path = "/zfs/data/bankcallreports/raw/current/data/panel_full_all_quarters.csv"
+df = pd.read_csv(panel_path, low_memory=False)
+
+required_cols = ["quarter_code", "idrssd", "asset_diff", "missing_inputs", "assets"]
+
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"{col} not found in dataset.")
+
+for col in ["asset_diff", "missing_inputs", "assets"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+df = df.dropna(subset=["quarter_code", "idrssd", "asset_diff"])
+df["abs_asset_diff"] = df["asset_diff"].abs()
+
+# =====================================================
+# 2. AGGREGATE FULL PANEL
+# =====================================================
+
+quarter_error = (
+    df.groupby("quarter_code")["abs_asset_diff"]
+    .mean()
+    .reset_index(name="quarter_mean_abs_diff")
+)
+
+bank_error = (
+    df.groupby("idrssd")
+    .agg(bank_mean_abs_diff=("abs_asset_diff", "mean"),
+         bank_mean_assets=("assets", "mean"))
+    .reset_index()
+)
+
+quarter_missing = (
+    df.groupby("quarter_code")["missing_inputs"]
+    .mean()
+    .reset_index(name="quarter_mean_missing")
+)
+
+bank_missing = (
+    df.groupby("idrssd")
+    .agg(bank_mean_missing=("missing_inputs", "mean"),
+         bank_mean_assets=("assets", "mean"))
+    .reset_index()
+)
+
+# =====================================================
+# 3. OUTPUT FOLDER
+# =====================================================
+
+out_dir = "/zfs/data/bankcallreports/raw/current/data/qc_outputs"
+os.makedirs(out_dir, exist_ok=True)
+
+# =====================================================
+# 4. HISTOGRAMS – ERRORS
+# =====================================================
+
+if not os.path.exists(f"{out_dir}/hist_quarter_error.png"):
+    plt.figure()
+    plt.hist(quarter_error["quarter_mean_abs_diff"], bins=50)
+    plt.title("Quarter-Level Mean Absolute Asset Error")
+    plt.savefig(f"{out_dir}/hist_quarter_error.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_bank_error.png"):
+    plt.figure()
+    plt.hist(bank_error["bank_mean_abs_diff"], bins=50)
+    plt.title("Bank-Level Mean Absolute Asset Error")
+    plt.savefig(f"{out_dir}/hist_bank_error.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_quarter_error_filtered.png"):
+    plt.figure()
+    plt.hist(quarter_error[quarter_error["quarter_mean_abs_diff"] > 1e-6]["quarter_mean_abs_diff"], bins=50)
+    plt.title("Quarter-Level Mean Absolute Asset Error (Filtered)")
+    plt.savefig(f"{out_dir}/hist_quarter_error_filtered.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_bank_error_filtered.png"):
+    plt.figure()
+    plt.hist(bank_error[bank_error["bank_mean_abs_diff"] > 1e-6]["bank_mean_abs_diff"], bins=50)
+    plt.title("Bank-Level Mean Absolute Asset Error (Filtered)")
+    plt.savefig(f"{out_dir}/hist_bank_error_filtered.png")
+    plt.close()
+
+# =====================================================
+# 5. IDENTIFY TAIL OUTLIERS (ERRORS)
+# =====================================================
+
+q_cutoff = quarter_error["quarter_mean_abs_diff"].quantile(0.99)
+b_cutoff = bank_error["bank_mean_abs_diff"].quantile(0.99)
+
+quarter_outliers = quarter_error[quarter_error["quarter_mean_abs_diff"] >= q_cutoff]
+bank_outliers = bank_error[bank_error["bank_mean_abs_diff"] >= b_cutoff]
+
+quarter_outliers.to_csv(f"{out_dir}/quarter_error_outliers.csv", index=False)
+bank_outliers.to_csv(f"{out_dir}/bank_error_outliers.csv", index=False)
+
+# =====================================================
+# 6. DRILL INTO EXAMPLE OUTLIERS (ERRORS)
+# =====================================================
+
+if not quarter_outliers.empty:
+    example_q = quarter_outliers["quarter_code"].iloc[0]
+    drill_path = f"{out_dir}/drill_quarter_{example_q}.png"
+    if not os.path.exists(drill_path):
+        subset_q = df[df["quarter_code"] == example_q]
+        plt.figure()
+        plt.hist(subset_q["abs_asset_diff"], bins=50)
+        plt.title(f"Bank Distribution of Errors in {example_q}")
+        plt.savefig(drill_path)
+        plt.close()
+
+if not bank_outliers.empty:
+    example_b = bank_outliers["idrssd"].iloc[0]
+    drill_path = f"{out_dir}/drill_bank_{example_b}.png"
+    if not os.path.exists(drill_path):
+        subset_b = df[df["idrssd"] == example_b]
+        plt.figure()
+        plt.plot(subset_b.sort_values("quarter_code")["quarter_code"],
+                 subset_b.sort_values("quarter_code")["abs_asset_diff"])
+        plt.xticks(rotation=90)
+        plt.title(f"Error Over Time for Bank {example_b}")
+        plt.tight_layout()
+        plt.savefig(drill_path)
+        plt.close()
+
+# =====================================================
+# 7. HISTOGRAMS – MISSING INPUTS
+# =====================================================
+
+if not os.path.exists(f"{out_dir}/hist_quarter_missing.png"):
+    plt.figure()
+    plt.hist(quarter_missing["quarter_mean_missing"], bins=50)
+    plt.title("Quarter-Level Mean Missing Inputs")
+    plt.savefig(f"{out_dir}/hist_quarter_missing.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_bank_missing.png"):
+    plt.figure()
+    plt.hist(bank_missing["bank_mean_missing"], bins=50)
+    plt.title("Bank-Level Mean Missing Inputs")
+    plt.savefig(f"{out_dir}/hist_bank_missing.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_quarter_missing_filtered.png"):
+    plt.figure()
+    plt.hist(quarter_missing[quarter_missing["quarter_mean_missing"] > 1e-6]["quarter_mean_missing"], bins=50)
+    plt.title("Quarter-Level Mean Missing Inputs (Filtered)")
+    plt.savefig(f"{out_dir}/hist_quarter_missing_filtered.png")
+    plt.close()
+
+if not os.path.exists(f"{out_dir}/hist_bank_missing_filtered.png"):
+    plt.figure()
+    plt.hist(bank_missing[bank_missing["bank_mean_missing"] > 1e-6]["bank_mean_missing"], bins=50)
+    plt.title("Bank-Level Mean Missing Inputs (Filtered)")
+    plt.savefig(f"{out_dir}/hist_bank_missing_filtered.png")
+    plt.close()
+
+# =====================================================
+# 8. NEW: PERCENTAGE ERROR HISTOGRAMS PER QUARTER (FILTERED)
+# =====================================================
+
+df_pct = df[df["assets"] > 0].copy()
+df_pct["pct_error"] = (df_pct["asset_diff"] / df_pct["assets"]) * 100
+df_pct = df_pct[df_pct["pct_error"].abs() > 0.01]  # remove near-zero clustering
+
+pct_out_dir = f"{out_dir}/hist_pct_error_by_quarter"
+os.makedirs(pct_out_dir, exist_ok=True)
+
+def quarter_code_to_label(qc):
+    qc = str(qc)
+    try:
+        month = int(qc[:-4])
+        year = int(qc[-4:])
+        quarter_map = {3: "Q1", 6: "Q2", 9: "Q3", 12: "Q4"}
+        q_label = quarter_map.get(month, f"M{month}")
+        return f"{year} {q_label}"
+    except Exception:
+        return str(qc)
+
+quarters = sorted(df_pct["quarter_code"].unique())
+
+for qc in quarters:
+    out_path = f"{pct_out_dir}/hist_pct_error_{qc}_filtered.png"
+    if os.path.exists(out_path):
+        continue
+
+    subset = df_pct[df_pct["quarter_code"] == qc]["pct_error"].dropna()
+
+    if len(subset) < 10:
+        continue
+
+    label = quarter_code_to_label(qc)
+
+    lo = subset.quantile(0.01)
+    hi = subset.quantile(0.99)
+    subset_clipped = subset[(subset >= lo) & (subset <= hi)]
+
+    plt.figure()
+    plt.hist(subset_clipped, bins=50, density=True)
+    plt.title(f"Asset Error as % of Assets (Filtered) — {label}")
+    plt.xlabel("Error as % of Assets")
+    plt.ylabel("Fraction of Bank-Quarter Observations")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+print("Done! Skipped any histograms that already existed.")
+print(f"Per-quarter % error histograms saved to: {pct_out_dir}")
