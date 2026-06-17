@@ -1,0 +1,20 @@
+# data directories — too large for git
+Data_wayback/
+Data_cleaned/
+Data_raw/
+
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# slurm logs
+*.log
+*.err
+
+# checkpoints
+*.json.tmp
+
+# editor/OS
+.DS_Store
+*.swp
